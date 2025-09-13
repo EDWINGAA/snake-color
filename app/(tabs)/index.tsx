@@ -1,67 +1,100 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from "react-native";
+import React, { useState, useEffect, useRef } from "react";
+import { View, Text, StyleSheet, Dimensions, PanResponder, Platform } from "react-native";
 import ConfettiCannon from "react-native-confetti-cannon";
 
 const GRID_SIZE = 15;
 const CELL_SIZE = 20;
 const INITIAL_SNAKE = [{ x: 7, y: 7 }];
 const INITIAL_DIRECTION = { x: 1, y: 0 };
+const INITIAL_SPEED = 200;          // prueba 160 si quieres más ritmo
+const SPEED_MULTIPLIER = 0.985;     // 1.5 % más rápido
+const SWIPE_THRESHOLD = 8;          // más sensible para móvil
 
 export default function App() {
   const [snake, setSnake] = useState(INITIAL_SNAKE);
-  const [food, setFood] = useState(randomFood());
-  const [direction, setDirection] = useState(INITIAL_DIRECTION);
+  const [food, setFood] = useState(randomFood(INITIAL_SNAKE));
   const [score, setScore] = useState(0);
   const [snakeColor, setSnakeColor] = useState("green");
   const [isGameOver, setIsGameOver] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
+  const [speed, setSpeed] = useState(INITIAL_SPEED);
 
-  // Movimiento automático
+  // Refs para loop estable
+  const dirRef = useRef(INITIAL_DIRECTION);
+  const snakeRef = useRef(INITIAL_SNAKE);
+  const isGameOverRef = useRef(false);
+  const hasSwipedRef = useRef(false);
+
+  useEffect(() => { isGameOverRef.current = isGameOver; }, [isGameOver]);
+  useEffect(() => { snakeRef.current = snake; }, [snake]);
+
+  // Loop de movimiento (no depende de snake/direction)
   useEffect(() => {
     if (isGameOver) return;
-    const interval = setInterval(moveSnake, 200);
-    return () => clearInterval(interval);
-  }, [snake, direction, isGameOver]);
+    const id = setInterval(() => moveSnake(), speed);
+    return () => clearInterval(id);
+  }, [speed, isGameOver]);
 
-  // Función para mover la serpiente
+  // === CONTROLES POR TECLADO (WEB/PC) ===
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (isGameOverRef.current) return;
+
+      const key = e.key.toLowerCase();
+      if (["arrowup", "w"].includes(key)) {
+        e.preventDefault();
+        safeSetDirection({ x: 0, y: -1 });
+      } else if (["arrowdown", "s"].includes(key)) {
+        e.preventDefault();
+        safeSetDirection({ x: 0, y: 1 });
+      } else if (["arrowleft", "a"].includes(key)) {
+        e.preventDefault();
+        safeSetDirection({ x: -1, y: 0 });
+      } else if (["arrowright", "d"].includes(key)) {
+        e.preventDefault();
+        safeSetDirection({ x: 1, y: 0 });
+      } else if (key === " " && isGameOverRef.current) {
+        // espacio para reintentar (opcional)
+        e.preventDefault();
+        resetGame();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown, { passive: false });
+    return () => window.removeEventListener("keydown", onKeyDown as any);
+  }, []);
+
   function moveSnake() {
-    const head = {
-      x: snake[0].x + direction.x,
-      y: snake[0].y + direction.y,
-    };
+    const snakeNow = snakeRef.current;
+    const dir = dirRef.current;
 
-    // Game over si se sale del tablero
-    if (
-      head.x < 0 ||
-      head.x >= GRID_SIZE ||
-      head.y < 0 ||
-      head.y >= GRID_SIZE
-    ) {
+    const head = { x: snakeNow[0].x + dir.x, y: snakeNow[0].y + dir.y };
+
+    // Colisiones
+    if (head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE) {
       triggerGameOver();
       return;
     }
-
-    // Game over si choca consigo misma
-    for (let part of snake) {
+    for (let part of snakeNow) {
       if (part.x === head.x && part.y === head.y) {
         triggerGameOver();
         return;
       }
     }
 
-    const newSnake = [head, ...snake];
+    let newSnake = [head, ...snakeNow];
 
-    // Comer comida
     if (head.x === food.x && head.y === food.y) {
       const nextScore = score + 1;
       setScore(nextScore);
-      setFood(randomFood());
-      setSnakeColor(randomColor()); // cambia color al anotar
+      setFood(randomFood(newSnake));
+      setSnakeColor(randomColor());
+      setSpeed(prev => Math.max(40, prev * SPEED_MULTIPLIER));
 
-      // Celebrar cada múltiplo de 10
-      if (nextScore > 0 && nextScore % 10 === 0) {
-        // Mostrar confeti brevemente
-        setShowConfetti(false); // reinicia para volver a disparar
+      if (nextScore % 10 === 0) {
+        setShowConfetti(false);
         setTimeout(() => setShowConfetti(true), 0);
       }
     } else {
@@ -71,83 +104,71 @@ export default function App() {
     setSnake(newSnake);
   }
 
-  // Evitar cambio de dirección inversa inmediata
+  // Evitar giro 180°
   function safeSetDirection(nextDir: { x: number; y: number }) {
-    if (isGameOver) return;
-    const current = direction;
-    // Si intenta ir en sentido contrario en el mismo eje, ignorar
-    if (current.x + nextDir.x === 0 && current.y + nextDir.y === 0) return;
-    setDirection(nextDir);
+    const cur = dirRef.current;
+    if (cur.x + nextDir.x === 0 && cur.y + nextDir.y === 0) return;
+    dirRef.current = nextDir;
   }
 
-  function triggerGameOver() {
-    setIsGameOver(true);
-  }
+  function triggerGameOver() { setIsGameOver(true); }
 
-  // Reiniciar juego
   function resetGame() {
-    setSnake(INITIAL_SNAKE);
-    setDirection(INITIAL_DIRECTION);
-    setFood(randomFood());
+    const start = INITIAL_SNAKE;
+    setSnake(start);
+    snakeRef.current = start;
+    dirRef.current = INITIAL_DIRECTION;
+    setFood(randomFood(start));
     setScore(0);
     setSnakeColor("green");
     setIsGameOver(false);
     setShowConfetti(false);
-  }
-
-  // Generar comida aleatoria que no caiga encima de la serpiente
-  function randomFood() {
-    while (true) {
-      const candidate = {
-        x: Math.floor(Math.random() * GRID_SIZE),
-        y: Math.floor(Math.random() * GRID_SIZE),
-      };
-      const collides = snake.some((p) => p.x === candidate.x && p.y === candidate.y);
-      if (!collides) return candidate;
-    }
-  }
-
-  // Generar color aleatorio
-  function randomColor() {
-    const colors = ["green", "blue", "red", "orange", "purple", "pink"];
-    return colors[Math.floor(Math.random() * colors.length)];
+    setSpeed(INITIAL_SPEED);
   }
 
   const boardSize = GRID_SIZE * CELL_SIZE;
   const { width } = Dimensions.get("window");
 
+  // Gestos táctiles (móvil)
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => !isGameOver,
+      onMoveShouldSetPanResponder: (_, g) =>
+        !isGameOver && (Math.abs(g.dx) > SWIPE_THRESHOLD || Math.abs(g.dy) > SWIPE_THRESHOLD),
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderGrant: () => { hasSwipedRef.current = false; },
+      onPanResponderMove: (_, g) => {
+        if (hasSwipedRef.current) return;
+        const { dx, dy } = g;
+        if (Math.abs(dx) > Math.abs(dy)) {
+          if (dx > SWIPE_THRESHOLD) { safeSetDirection({ x: 1, y: 0 }); hasSwipedRef.current = true; }
+          else if (dx < -SWIPE_THRESHOLD) { safeSetDirection({ x: -1, y: 0 }); hasSwipedRef.current = true; }
+        } else {
+          if (dy > SWIPE_THRESHOLD) { safeSetDirection({ x: 0, y: 1 }); hasSwipedRef.current = true; }
+          else if (dy < -SWIPE_THRESHOLD) { safeSetDirection({ x: 0, y: -1 }); hasSwipedRef.current = true; }
+        }
+      },
+      onPanResponderRelease: () => { hasSwipedRef.current = false; },
+    })
+  ).current;
+
   return (
     <View style={styles.container}>
       <Text style={styles.score}>Puntuación: {score}</Text>
 
-      {/* Tablero */}
       <View
-        style={[
-          styles.board,
-          {
-            width: boardSize,
-            height: boardSize,
-          },
-        ]}
+        style={[styles.board, { width: boardSize, height: boardSize }]}
+        {...panResponder.panHandlers}
       >
         {Array.from({ length: GRID_SIZE * GRID_SIZE }).map((_, index) => {
           const x = index % GRID_SIZE;
           const y = Math.floor(index / GRID_SIZE);
-
           let backgroundColor = "#eee";
-
-          // Comida
-          if (food.x === x && food.y === y) {
-            backgroundColor = "red";
-          }
-
-          // Serpiente
-          snake.forEach((part) => {
-            if (part.x === x && part.y === y) {
-              backgroundColor = snakeColor;
-            }
+          if (food.x === x && food.y === y) backgroundColor = "red";
+          snake.forEach(part => {
+            if (part.x === x && part.y === y) backgroundColor = snakeColor;
           });
-
           return (
             <View
               key={index}
@@ -163,35 +184,21 @@ export default function App() {
         })}
       </View>
 
-      {/* Controles */}
-      <View style={styles.controls}>
-        <TouchableOpacity onPress={() => safeSetDirection({ x: 0, y: -1 })}>
-          <Text style={styles.button}>⬆️</Text>
-        </TouchableOpacity>
-        <View style={{ flexDirection: "row" }}>
-          <TouchableOpacity onPress={() => safeSetDirection({ x: -1, y: 0 })}>
-            <Text style={styles.button}>⬅️</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => safeSetDirection({ x: 1, y: 0 })}>
-            <Text style={styles.button}>➡️</Text>
-          </TouchableOpacity>
-        </View>
-        <TouchableOpacity onPress={() => safeSetDirection({ x: 0, y: 1 })}>
-          <Text style={styles.button}>⬇️</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Overlay Game Over */}
       {isGameOver && (
         <View style={styles.overlay}>
           <Text style={styles.gameOverTitle}>GAME OVER</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={resetGame}>
+          <Text style={{ color: "#fff", marginBottom: 10 }}>Puntuación: {score}</Text>
+          <View onTouchEnd={resetGame} style={styles.retryBtn}>
             <Text style={styles.retryText}>Reintentar</Text>
-          </TouchableOpacity>
+          </View>
+          {Platform.OS === "web" && (
+            <Text style={{ color: "#fff", marginTop: 8, opacity: 0.85 }}>
+              Pulsa <b>Espacio</b> para reiniciar
+            </Text>
+          )}
         </View>
       )}
 
-      {/* Confeti en múltiplos de 10 */}
       {showConfetti && (
         <ConfettiCannon
           count={150}
@@ -208,54 +215,31 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#fff",
-  },
-  score: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginBottom: 10,
-  },
-  board: {
-    backgroundColor: "#eee",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    position: "relative",
-  },
-  controls: {
-    marginTop: 20,
-    alignItems: "center",
-  },
-  button: {
-    fontSize: 30,
-    margin: 10,
-  },
+  container: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#fff" },
+  score: { fontSize: 20, fontWeight: "bold", marginBottom: 10 },
+  board: { backgroundColor: "#eee", flexDirection: "row", flexWrap: "wrap", position: "relative" },
   overlay: {
-    position: "absolute",
-    top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "center",
-    alignItems: "center",
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.55)", justifyContent: "center", alignItems: "center",
     paddingHorizontal: 24,
   },
-  gameOverTitle: {
-    fontSize: 36,
-    color: "#fff",
-    fontWeight: "bold",
-    marginBottom: 16,
-  },
-  retryBtn: {
-    backgroundColor: "#fff",
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 10,
-  },
-  retryText: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-  },
+  gameOverTitle: { fontSize: 36, color: "#fff", fontWeight: "bold", marginBottom: 6 },
+  retryBtn: { backgroundColor: "#fff", paddingHorizontal: 24, paddingVertical: 12, borderRadius: 10 },
+  retryText: { fontSize: 18, fontWeight: "bold", color: "#333" },
 });
+
+// helpers
+function randomFood(curSnake: {x:number;y:number}[]) {
+  while (true) {
+    const candidate = {
+      x: Math.floor(Math.random() * GRID_SIZE),
+      y: Math.floor(Math.random() * GRID_SIZE),
+    };
+    const collides = curSnake.some(p => p.x === candidate.x && p.y === candidate.y);
+    if (!collides) return candidate;
+  }
+}
+function randomColor() {
+  const colors = ["green", "blue", "red", "orange", "purple", "pink"];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
